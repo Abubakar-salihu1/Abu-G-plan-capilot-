@@ -1,6 +1,7 @@
 import React,{useEffect,useState,useRef} from "react";
-import {Bot,Menu,Plus,Send,Sparkles,Trash2,User,X,Code2,Lightbulb,FileText,Brain,Mic,ChevronDown,LogOut} from "lucide-react";
+import {Bot,Menu,Plus,Send,Sparkles,Trash2,User,X,Code2,Lightbulb,FileText,Brain,Mic,ChevronDown,LogOut,Hammer,Download,ExternalLink} from "lucide-react";
 const API=import.meta.env.VITE_API_URL||"http://localhost:5000/api";
+const ORIGIN=API.replace(/\/api\/?$/,"");
 
 const MODELS=[
  {id:"openai/gpt-oss-20b",label:"Fast"},
@@ -50,6 +51,31 @@ function AuthScreen({onAuthenticated}){
  </div>
 }
 
+function BuildResult({build}){
+ if(!build) return null;
+ return <div className="buildResult">
+  <div className="buildHeader">
+   <Hammer size={15}/> <span>App built — {build.files?.length||0} file{build.files?.length===1?"":"s"}</span>
+  </div>
+  <div className="buildPreviewWrap">
+   <iframe
+    className="buildPreview"
+    src={`${ORIGIN}${build.previewUrl}`}
+    title="App preview"
+    sandbox="allow-scripts allow-forms allow-popups allow-modals"
+   />
+  </div>
+  <div className="buildActions">
+   <a className="buildBtn" href={`${ORIGIN}${build.previewUrl}`} target="_blank" rel="noreferrer">
+    <ExternalLink size={14}/> Open full preview
+   </a>
+   <a className="buildBtn" href={`${ORIGIN}${build.downloadUrl}`} download>
+    <Download size={14}/> Download zip
+   </a>
+  </div>
+ </div>
+}
+
 export default function App(){
  const [authToken,setAuthToken]=useState(null);
  const [authEmail,setAuthEmail]=useState("");
@@ -60,6 +86,8 @@ export default function App(){
  const [attachments,setAttachments]=useState([]);
  const [model,setModel]=useState(MODELS[0].id);
  const [modelMenuOpen,setModelMenuOpen]=useState(false);
+ const [buildMode,setBuildMode]=useState(false);
+ const [activeBuildId,setActiveBuildId]=useState(null);
  const recognitionRef=useRef(null);
  const fileInputRef=useRef(null);
 
@@ -127,7 +155,7 @@ export default function App(){
   });
  }
 
- function newChat(){setConversationId(null);setMessages([]);setInput("");setSidebar(false);setAttachments([])}
+ function newChat(){setConversationId(null);setMessages([]);setInput("");setSidebar(false);setAttachments([]);setActiveBuildId(null)}
  async function openChat(id){try{const r=await fetch(`${API}/conversations/${id}`,{headers:authHeaders()});if(!r.ok)return;const c=await r.json();setConversationId(id);setMessages(c.messages||[]);setSidebar(false)}catch{} }
 
  async function sendMessage(e){
@@ -135,6 +163,32 @@ export default function App(){
   const text=input.trim();
   if((!text&&attachments.length===0)||loading) return;
   setInput("");
+
+  if(buildMode){
+   setMessages(m=>[...m,{role:"user",content:text}]);
+   setLoading(true);
+   try{
+    let r, data;
+    if(activeBuildId){
+     r=await fetch(`${API}/build/${activeBuildId}/edit`,{method:"POST",headers:{"Content-Type":"application/json",...authHeaders()},body:JSON.stringify({instruction:text})});
+     data=await r.json();
+     if(!r.ok) throw new Error(data.error||"Edit failed");
+     setMessages(m=>[...m,{role:"assistant",content:"Updated your app:",build:data}]);
+    }else{
+     r=await fetch(`${API}/build`,{method:"POST",headers:{"Content-Type":"application/json",...authHeaders()},body:JSON.stringify({prompt:text})});
+     data=await r.json();
+     if(!r.ok) throw new Error(data.error||"Build failed");
+     setMessages(m=>[...m,{role:"assistant",content:"Here's your app:",build:data}]);
+    }
+    setActiveBuildId(data.buildId);
+   }catch(err){
+    setMessages(m=>[...m,{role:"assistant",content:`I couldn't ${activeBuildId?"update":"build"} that app. ${err.message}`}]);
+   }finally{
+    setLoading(false);
+   }
+   return;
+  }
+
   const attachedNow=attachments;
   setAttachments([]);
   setMessages(m=>[...m,{role:"user",content:text+(attachedNow.length?("\n\n"+attachedNow.map(a=>`[Attached ${a.isImage?"image":"file"}: ${a.file.name}]`).join("\n")):"")}]);
@@ -183,16 +237,31 @@ export default function App(){
   </aside>
   <main className="main">
    <header><button className="menu" onClick={()=>setSidebar(true)}><Menu/></button><div className="title"><Sparkles size={18}/> Abu Gplan AI Copilot</div><div className="online"><i/> Online</div></header>
-   <section className="chatArea">{messages.length===0?<div className="welcome"><img className="heroLogo" src="/logo.png"/><div className="eyebrow"><Sparkles size={15}/> YOUR AI WORKSPACE</div><h1>What can I help you solve?</h1><p>Ask Abu Gplan to plan, explain, code, analyze, write, brainstorm or work through a problem with you.</p><div className="examples">{examples.map((x,i)=><button key={i} onClick={()=>setInput(x.text)}><span>{x.icon}</span>{x.text}</button>)}</div></div>:<div className="messages">{messages.map((m,i)=><div className={`message ${m.role}`} key={i}><div className="avatar">{m.role==="user"?<User size={17}/>:<Bot size={17}/>}</div><div className="bubble">{m.content}</div></div>)}{loading&&<div className="message assistant"><div className="avatar"><Bot size={17}/></div><div className="bubble thinking"><span/><span/><span/></div></div>}</div>}</section>
+   <section className="chatArea">{messages.length===0?<div className="welcome"><img className="heroLogo" src="/logo.png"/><div className="eyebrow"><Sparkles size={15}/> YOUR AI WORKSPACE</div><h1>What can I help you solve?</h1><p>Ask Abu Gplan to plan, explain, code, analyze, write, brainstorm or work through a problem with you.</p><div className="examples">{examples.map((x,i)=><button key={i} onClick={()=>setInput(x.text)}><span>{x.icon}</span>{x.text}</button>)}</div></div>:<div className="messages">{messages.map((m,i)=><div className={`message ${m.role}`} key={i}><div className="avatar">{m.role==="user"?<User size={17}/>:<Bot size={17}/>}</div><div className="bubble">{m.content}{m.build&&<BuildResult build={m.build}/>}</div></div>)}{loading&&<div className="message assistant"><div className="avatar"><Bot size={17}/></div><div className="bubble thinking"><span/><span/><span/></div></div>}</div>}</section>
 
    <div className="composerWrap">
-    <div className="modelPicker">
-     <button type="button" className="modelPickerBtn" onClick={()=>setModelMenuOpen(o=>!o)}>
-      {currentModelLabel}<ChevronDown size={14}/>
+    <div className="composerToolbar">
+     <div className="modelPicker">
+      <button type="button" className="modelPickerBtn" onClick={()=>setModelMenuOpen(o=>!o)}>
+       {currentModelLabel}<ChevronDown size={14}/>
+      </button>
+      {modelMenuOpen&&<div className="modelMenu">
+       {MODELS.map(m=><button type="button" key={m.id} className={`modelOption ${m.id===model?"active":""}`} onClick={()=>{setModel(m.id);setModelMenuOpen(false)}}>{m.label}</button>)}
+      </div>}
+     </div>
+     <button
+      type="button"
+      className={`buildToggle ${buildMode?"active":""}`}
+      onClick={()=>setBuildMode(b=>!b)}
+      title="Generate a runnable web app instead of chatting"
+     >
+      <Hammer size={14}/> Build App
      </button>
-     {modelMenuOpen&&<div className="modelMenu">
-      {MODELS.map(m=><button type="button" key={m.id} className={`modelOption ${m.id===model?"active":""}`} onClick={()=>{setModel(m.id);setModelMenuOpen(false)}}>{m.label}</button>)}
-     </div>}
+     {buildMode&&activeBuildId&&
+      <button type="button" className="buildToggle" onClick={()=>setActiveBuildId(null)} title="Discard the current app and start a new one">
+       New app
+      </button>
+     }
     </div>
 
     {attachments.length>0&&<div className="attachments">
@@ -205,9 +274,9 @@ export default function App(){
 
     <form className="composer" onSubmit={sendMessage}>
      <input ref={fileInputRef} type="file" multiple accept=".jpg,.jpeg,.png,.pdf,.txt,.docx" style={{display:"none"}} onChange={onFilesSelected}/>
-     <button type="button" className="composerIcon plus" onClick={openFilePicker}><Plus size={20}/></button>
-     <textarea value={input} rows="1" placeholder="Message Abu Gplan AI..." onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage(e)}}}/>
-     <button type="button" className={`composerIcon mic ${listening?"listening":""}`} onClick={toggleMic}><Mic size={19}/></button>
+     {!buildMode&&<button type="button" className="composerIcon plus" onClick={openFilePicker}><Plus size={20}/></button>}
+     <textarea value={input} rows="1" placeholder={buildMode?(activeBuildId?"Describe the change you want (e.g. \"make the header blue\")...":"Describe the web app you want built..."):"Message Abu Gplan AI..."} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage(e)}}}/>
+     {!buildMode&&<button type="button" className={`composerIcon mic ${listening?"listening":""}`} onClick={toggleMic}><Mic size={19}/></button>}
      <button className="composerIcon sendBtn" disabled={(!input.trim()&&attachments.length===0)||loading}><Send size={18}/></button>
     </form>
    </div>

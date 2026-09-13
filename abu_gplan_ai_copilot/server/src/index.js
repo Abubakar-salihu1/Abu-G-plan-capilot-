@@ -3,8 +3,12 @@ import cors from "cors";
 import dotenv from "dotenv";
 import crypto from "crypto";
 import multer from "multer";
+import fs from "fs";
+import path from "path";
+import archiver from "archiver";
 import { createRequire } from "module";
 import mammoth from "mammoth";
+import sharp from "sharp";
 import { MongoClient } from "mongodb";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -19,6 +23,12 @@ app.use(cors({origin: process.env.CLIENT_ORIGIN || "*"}));
 app.use(express.json({limit:"2mb"}));
 
 const upload = multer({storage: multer.memoryStorage(), limits:{fileSize:10*1024*1024, files:5}});
+
+/* ---------- Generated app builds: on-disk storage + static preview ---------- */
+const BUILDS_DIR = path.join(process.cwd(), "builds");
+if(!fs.existsSync(BUILDS_DIR)) fs.mkdirSync(BUILDS_DIR, {recursive:true});
+app.use("/preview", express.static(BUILDS_DIR));
+app.use("/builds", express.static(BUILDS_DIR));
 
 /* ---------- MongoDB (users + conversations) ---------- */
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
@@ -145,41 +155,83 @@ app.delete("/api/conversations/:id", authMiddleware, async(req,res)=>{
   }
 });
 
+/* ---------- File extraction (images resized/compressed to avoid oversized Groq requests) ---------- */
 async function extractFileContent(file){
   const {mimetype, originalname, buffer} = file;
+
   if(mimetype && mimetype.startsWith("image/")){
-    return {type:"image", name:originalname, dataUrl:`data:${mimetype};base64,${buffer.toString("base64")}`};
+    let outBuffer = buffer;
+    try{
+      outBuffer = await sharp(buffer)
+        .resize({width:1024, withoutEnlargement:true})
+        .jpeg({quality:75})
+        .toBuffer();
+    }catch(e){
+      console.error(`Image resize failed for ${originalname}, falling back to original buffer:`, e.message);
+    }
+    return {type:"image", name:originalname, dataUrl:`data:image/jpeg;base64,${outBuffer.toString("base64")}`};
   }
+
   if(mimetype === "application/pdf"){
     try{
       const data = await pdfParse(buffer);
-      return {type:"text", name:originalname, text:data.text.slice(0,15000)};
+      return {type:"text", name:originalname, text:data.text.slice(0,8000)};
     }catch(e){
       return {type:"text", name:originalname, text:`[Could not read PDF file: ${originalname}]`};
     }
   }
+
   if(mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"){
     try{
       const {value} = await mammoth.extractRawText({buffer});
-      return {type:"text", name:originalname, text:value.slice(0,15000)};
+      return {type:"text", name:originalname, text:value.slice(0,8000)};
     }catch(e){
       return {type:"text", name:originalname, text:`[Could not read Word document: ${originalname}]`};
     }
   }
+
   if(mimetype === "text/plain"){
-    return {type:"text", name:originalname, text:buffer.toString("utf-8").slice(0,15000)};
+    return {type:"text", name:originalname, text:buffer.toString("utf-8").slice(0,8000)};
   }
+
   return {type:"text", name:originalname, text:`[Unsupported file type: ${originalname}]`};
 }
 
-async function callAI(messages, model){
+/* ---------- Trim conversation history before sending to the AI provider ---------- */
+function trimHistory(messages, maxChars = 20000){
+  let total = 0;
+  const kept = [];
+  for(let i = messages.length - 1; i >= 0; i--){
+    const len = JSON.stringify(messages[i]).length;
+    if(total + len > maxChars && kept.length > 0) break;
+    kept.unshift(messages[i]);
+    total += len;
+  }
+  return kept;
+}
+
+async function callAI(messages, model, systemPrompt){
   const {AI_API_URL,AI_API_KEY}=process.env;
   const useModel = model || process.env.AI_MODEL;
   if(!AI_API_URL||!AI_API_KEY||!useModel||AI_API_KEY==="your_api_key_here")
     return "Abu Gplan AI Copilot is ready, but the AI provider is not configured yet. Add AI_API_URL, AI_API_KEY and AI_MODEL to server/.env and restart the server.";
-  const system={role:"system",content:"You are Abu Gplan AI Copilot, a capable general-purpose AI assistant. Help solve problems, write and debug code, analyze information, plan projects, draft documents, explain difficult topics, and brainstorm. Be accurate, practical, and honest about uncertainty. Do not claim access to systems or information you do not have. When the user attaches images or documents, use their content to inform your answer."};
-  const r=await fetch(AI_API_URL,{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${AI_API_KEY}`},body:JSON.stringify({model:useModel,messages:[system,...messages],temperature:0.3})});
-  if(!r.ok) throw new Error(`AI provider returned HTTP ${r.status}`);
+
+  const system={role:"system",content: systemPrompt || "You are Abu Gplan AI Copilot, a capable general-purpose AI assistant. Help solve problems, write and debug code, analyze information, plan projects, draft documents, explain difficult topics, and brainstorm. Be accurate, practical, and honest about uncertainty. Do not claim access to systems or information you do not have. When the user attaches images or documents, use their content to inform your answer."};
+
+  const trimmed = trimHistory(messages);
+
+  const r=await fetch(AI_API_URL,{
+    method:"POST",
+    headers:{"Content-Type":"application/json","Authorization":`Bearer ${AI_API_KEY}`},
+    body:JSON.stringify({model:useModel,messages:[system,...trimmed],temperature:0.3})
+  });
+
+  if(!r.ok){
+    const errBody = await r.text().catch(()=> "");
+    console.error(`Groq error (HTTP ${r.status}):`, errBody);
+    throw new Error(`AI provider returned HTTP ${r.status}`);
+  }
+
   const data=await r.json();
   return data?.choices?.[0]?.message?.content || "No response was returned by the AI provider.";
 }
@@ -197,7 +249,7 @@ app.post("/api/chat", authMiddleware, upload.array("files", 5), async(req,res)=>
     }
 
     const extracted = await Promise.all(files.map(extractFileContent));
-    const images = extracted.filter(f=>f.type==="image");
+    const images = extracted.filter(f=>f.type==="image").slice(0,5);
     const textFiles = extracted.filter(f=>f.type==="text");
     const textFilesBlock = textFiles.length ? textFiles.map(f=>`[Attached file: ${f.name}]\n${f.text}`).join("\n\n") : "";
 
@@ -231,4 +283,166 @@ app.post("/api/chat", authMiddleware, upload.array("files", 5), async(req,res)=>
     res.json({conversationId:c._id,answer});
   }catch(e){console.error(e);res.status(500).json({error:e.message||"Server error"});}
 });
+
+/* ---------- Build a runnable web app: AI returns structured files, we write + zip + preview them ---------- */
+const BUILD_SYSTEM_PROMPT = `You are a code generation engine. The user will describe a web app they want.
+Respond with ONLY valid JSON, no markdown fences, no commentary, no explanation before or after. The JSON must match this exact shape:
+{"files":[{"path":"index.html","content":"..."}, {"path":"style.css","content":"..."}, {"path":"script.js","content":"..."}]}
+Rules:
+- Always include an index.html as the entry point, with relative links to any css/js files you create (e.g. <link rel="stylesheet" href="style.css">, <script src="script.js"></script>).
+- Keep it to plain HTML, CSS, and vanilla JavaScript only — no build tools, no frameworks requiring a bundler, no external npm packages. External CDN <script>/<link> tags are fine.
+- Make it a complete, runnable, self-contained static site with no missing files.
+- Do not include any text outside the JSON object.`;
+
+function safeParseBuildJSON(raw){
+  let text = String(raw||"").trim();
+  text = text.replace(/^```(?:json)?/i, "").replace(/```$/,"").trim();
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if(firstBrace===-1||lastBrace===-1) throw new Error("AI did not return JSON.");
+  text = text.slice(firstBrace, lastBrace+1);
+  const parsed = JSON.parse(text);
+  if(!parsed || !Array.isArray(parsed.files) || parsed.files.length===0){
+    throw new Error("AI response was missing a valid files array.");
+  }
+  return parsed;
+}
+
+function safeRelativePath(p){
+  const cleaned = String(p||"").replace(/^\/+/,"").split("/").filter(seg=>seg && seg!=="..").join("/");
+  return cleaned || "index.html";
+}
+
+function isValidBuildId(id){
+  return typeof id==="string" && /^[0-9a-f-]{36}$/i.test(id);
+}
+
+// Recursively read every file in a build directory back into the same
+// {path, content} shape the AI produces, so we can hand the current
+// project back to the model as context for an edit.
+function readBuildFiles(buildDir){
+  const files=[];
+  function walk(dir, prefix){
+    for(const entry of fs.readdirSync(dir, {withFileTypes:true})){
+      const full = path.join(dir, entry.name);
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if(entry.isDirectory()){
+        walk(full, rel);
+      }else{
+        files.push({path:rel, content:fs.readFileSync(full,"utf-8")});
+      }
+    }
+  }
+  walk(buildDir, "");
+  return files;
+}
+
+// Writes a set of {path, content} files into a fresh build directory,
+// zips it, and returns the same shape used by both /api/build and
+// /api/build/:id/edit responses.
+async function persistBuild(files){
+  const hasIndex = files.some(f=>safeRelativePath(f.path).toLowerCase()==="index.html");
+  if(!hasIndex) throw new Error("The generated project had no index.html entry point.");
+
+  const buildId = crypto.randomUUID();
+  const buildDir = path.join(BUILDS_DIR, buildId);
+  fs.mkdirSync(buildDir, {recursive:true});
+
+  const writtenFiles = [];
+  for(const f of files){
+    const relPath = safeRelativePath(f.path);
+    const fullPath = path.join(buildDir, relPath);
+    fs.mkdirSync(path.dirname(fullPath), {recursive:true});
+    fs.writeFileSync(fullPath, String(f.content||""), "utf-8");
+    writtenFiles.push(relPath);
+  }
+
+  const zipPath = path.join(BUILDS_DIR, `${buildId}.zip`);
+  await new Promise((resolve, reject)=>{
+    const output = fs.createWriteStream(zipPath);
+    const archive = archiver("zip", {zlib:{level:9}});
+    output.on("close", resolve);
+    archive.on("error", reject);
+    archive.pipe(output);
+    archive.directory(buildDir, false);
+    archive.finalize();
+  });
+
+  return {
+    buildId,
+    files: writtenFiles,
+    previewUrl: `/preview/${buildId}/index.html`,
+    downloadUrl: `/builds/${buildId}.zip`
+  };
+}
+
+app.post("/api/build", authMiddleware, async(req,res)=>{
+  try{
+    const prompt = String(req.body?.prompt||"").trim();
+    if(!prompt) return res.status(400).json({error:"Describe the app you want built."});
+
+    const model = process.env.AI_BUILD_MODEL || process.env.AI_MODEL;
+    const raw = await callAI([{role:"user", content:prompt}], model, BUILD_SYSTEM_PROMPT);
+
+    let parsed;
+    try{
+      parsed = safeParseBuildJSON(raw);
+    }catch(parseErr){
+      console.error("Build JSON parse failed. Raw AI output:", raw);
+      return res.status(502).json({error:"The AI did not return a valid project structure. Try rephrasing your request."});
+    }
+
+    const result = await persistBuild(parsed.files);
+    res.json(result);
+  }catch(e){
+    console.error(e);
+    res.status(500).json({error:e.message||"Build failed."});
+  }
+});
+
+/* ---------- Edit/refine an existing build via follow-up instruction ---------- */
+const EDIT_SYSTEM_PROMPT = `You are a code generation engine maintaining an existing static web project.
+The user will give you the CURRENT project files followed by an instruction describing a change.
+Respond with ONLY valid JSON, no markdown fences, no commentary. The JSON must match this exact shape:
+{"files":[{"path":"index.html","content":"..."}, ...]}
+Rules:
+- Return the COMPLETE, UPDATED set of project files — every file the project needs to run, not just the ones you changed.
+- Preserve everything from the current project that the instruction does not ask you to change.
+- Keep it to plain HTML, CSS, and vanilla JavaScript only — no build tools, no bundler-based frameworks. External CDN <script>/<link> tags are fine.
+- Always include an index.html entry point.
+- Do not include any text outside the JSON object.`;
+
+app.post("/api/build/:buildId/edit", authMiddleware, async(req,res)=>{
+  try{
+    const {buildId} = req.params;
+    const instruction = String(req.body?.instruction||"").trim();
+    if(!instruction) return res.status(400).json({error:"Describe the change you want to make."});
+    if(!isValidBuildId(buildId)) return res.status(400).json({error:"Invalid build id."});
+
+    const buildDir = path.join(BUILDS_DIR, buildId);
+    if(!fs.existsSync(buildDir)) return res.status(404).json({error:"That build no longer exists on the server."});
+
+    const currentFiles = readBuildFiles(buildDir);
+    const filesBlock = currentFiles.map(f=>`--- FILE: ${f.path} ---\n${f.content}`).join("\n\n");
+    const userContent = `Current project files:\n\n${filesBlock}\n\n--- INSTRUCTION ---\n${instruction}`;
+
+    const model = process.env.AI_BUILD_MODEL || process.env.AI_MODEL;
+    const raw = await callAI([{role:"user", content:userContent}], model, EDIT_SYSTEM_PROMPT);
+
+    let parsed;
+    try{
+      parsed = safeParseBuildJSON(raw);
+    }catch(parseErr){
+      console.error("Build edit JSON parse failed. Raw AI output:", raw);
+      return res.status(502).json({error:"The AI did not return a valid project structure. Try rephrasing your change."});
+    }
+
+    const result = await persistBuild(parsed.files);
+    res.json({...result, editedFrom:buildId});
+  }catch(e){
+    console.error(e);
+    res.status(500).json({error:e.message||"Edit failed."});
+  }
+});
+
 app.listen(port,()=>console.log(`Abu Gplan AI Copilot backend: http://localhost:${port}`));
