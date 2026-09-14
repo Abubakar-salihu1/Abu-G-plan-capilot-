@@ -202,6 +202,41 @@ body{
   z-index:20;
   box-shadow:0 6px 18px rgba(0,0,0,0.4);
 }
+.attachMenuWrap{
+  position:relative;
+}
+.attachMenu{
+  position:absolute;
+  bottom:calc(100% + 6px);
+  left:0;
+  background:#1e1e1e;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:10px;
+  overflow:hidden;
+  min-width:130px;
+  z-index:20;
+  box-shadow:0 6px 18px rgba(0,0,0,0.4);
+}
+.attachMenu button{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  width:100%;
+  text-align:left;
+  padding:10px 14px;
+  background:transparent;
+  border:none;
+  color:#eaf2ff;
+  font-size:13px;
+  cursor:pointer;
+}
+.attachMenu button:hover{
+  background:rgba(255,255,255,0.08);
+}
+.attachMenu button svg{
+  color:#22d3ee;
+  flex-shrink:0;
+}
 .modelOption{
   display:block;
   width:100%;

@@ -1,5 +1,5 @@
 import React,{useEffect,useState,useRef} from "react";
-import {Bot,Menu,Plus,Send,Sparkles,Trash2,User,X,Code2,Lightbulb,FileText,Brain,Mic,ChevronDown,LogOut,Hammer,Download,ExternalLink} from "lucide-react";
+import {Bot,Menu,Plus,Send,Sparkles,Trash2,User,X,Code2,Lightbulb,FileText,Brain,Mic,ChevronDown,LogOut,Hammer,Download,ExternalLink,Camera,Image} from "lucide-react";
 const API=import.meta.env.VITE_API_URL||"http://localhost:5000/api";
 const ORIGIN=API.replace(/\/api\/?$/,"");
 
@@ -92,6 +92,7 @@ export default function App(){
  const recognitionRef=useRef(null);
  const fileInputRef=useRef(null);
  const photoInputRef=useRef(null);
+ const cameraInputRef=useRef(null);
 
  useEffect(()=>{
   const stored=localStorage.getItem("abuGplanToken");
@@ -137,8 +138,9 @@ export default function App(){
   setListening(true);
  }
 
- function openFilePicker(){fileInputRef.current&&fileInputRef.current.click()}
+  function openFilePicker(){fileInputRef.current&&fileInputRef.current.click()}
  function openPhotoPicker(){photoInputRef.current&&photoInputRef.current.click()}
+ function openCamera(){cameraInputRef.current&&cameraInputRef.current.click()}
  function onFilesSelected(e){
   const picked=Array.from(e.target.files||[]);
   const withPreview=picked.map(file=>({
@@ -276,13 +278,15 @@ export default function App(){
     </div>}
 
     <form className="composer" onSubmit={sendMessage}>
+     <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={onFilesSelected}/>
      <input ref={photoInputRef} type="file" multiple accept="image/*" style={{display:"none"}} onChange={onFilesSelected}/>
      <input ref={fileInputRef} type="file" multiple accept=".pdf,.txt,.docx,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" style={{display:"none"}} onChange={onFilesSelected}/>
      {!buildMode&&<div className="attachMenuWrap">
       <button type="button" className="composerIcon plus" onClick={()=>setAttachMenuOpen(o=>!o)}><Plus size={20}/></button>
       {attachMenuOpen&&<div className="attachMenu">
-       <button type="button" onClick={()=>{setAttachMenuOpen(false);openPhotoPicker()}}>Photo</button>
-       <button type="button" onClick={()=>{setAttachMenuOpen(false);openFilePicker()}}>File</button>
+       <button type="button" onClick={()=>{setAttachMenuOpen(false);openCamera()}}><Camera size={15}/> Camera</button>
+       <button type="button" onClick={()=>{setAttachMenuOpen(false);openPhotoPicker()}}><Image size={15}/> Photo</button>
+       <button type="button" onClick={()=>{setAttachMenuOpen(false);openFilePicker()}}><FileText size={15}/> File</button>
       </div>}
      </div>}
      <textarea value={input} rows="1" placeholder={buildMode?(activeBuildId?"Describe the change you want (e.g. \"make the header blue\")...":"Describe the web app you want built..."):"Message Abu Gplan AI..."} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage(e)}}}/>
