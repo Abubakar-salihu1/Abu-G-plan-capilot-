@@ -210,7 +210,7 @@ function trimHistory(messages, maxChars = 20000){
   return kept;
 }
 
-async function callAI(messages, model, systemPrompt){
+async function callAI(messages, model, systemPrompt, options={}){
   const {AI_API_URL,AI_API_KEY}=process.env;
   const useModel = model || process.env.AI_MODEL;
   if(!AI_API_URL||!AI_API_KEY||!useModel||AI_API_KEY==="your_api_key_here")
@@ -220,10 +220,18 @@ async function callAI(messages, model, systemPrompt){
 
   const trimmed = trimHistory(messages);
 
+  const body = {
+    model:useModel,
+    messages:[system,...trimmed],
+    temperature: options.temperature ?? 0.3,
+    max_tokens: options.maxTokens || 4096
+  };
+  if(options.jsonMode) body.response_format = {type:"json_object"};
+
   const r=await fetch(AI_API_URL,{
     method:"POST",
     headers:{"Content-Type":"application/json","Authorization":`Bearer ${AI_API_KEY}`},
-    body:JSON.stringify({model:useModel,messages:[system,...trimmed],temperature:0.3})
+    body:JSON.stringify(body)
   });
 
   if(!r.ok){
@@ -233,7 +241,11 @@ async function callAI(messages, model, systemPrompt){
   }
 
   const data=await r.json();
-  return data?.choices?.[0]?.message?.content || "No response was returned by the AI provider.";
+  const choice = data?.choices?.[0];
+  if(choice?.finish_reason === "length"){
+    console.error("Groq response was cut off (finish_reason=length). Consider raising maxTokens.");
+  }
+  return choice?.message?.content || "No response was returned by the AI provider.";
 }
 
 app.post("/api/chat", authMiddleware, upload.array("files", 5), async(req,res)=>{
@@ -286,13 +298,14 @@ app.post("/api/chat", authMiddleware, upload.array("files", 5), async(req,res)=>
 
 /* ---------- Build a runnable web app: AI returns structured files, we write + zip + preview them ---------- */
 const BUILD_SYSTEM_PROMPT = `You are a code generation engine. The user will describe a web app they want.
-Respond with ONLY valid JSON, no markdown fences, no commentary, no explanation before or after. The JSON must match this exact shape:
+You must respond with a single JSON object matching this exact shape:
 {"files":[{"path":"index.html","content":"..."}, {"path":"style.css","content":"..."}, {"path":"script.js","content":"..."}]}
 Rules:
 - Always include an index.html as the entry point, with relative links to any css/js files you create (e.g. <link rel="stylesheet" href="style.css">, <script src="script.js"></script>).
 - Keep it to plain HTML, CSS, and vanilla JavaScript only — no build tools, no frameworks requiring a bundler, no external npm packages. External CDN <script>/<link> tags are fine.
+- Keep the project reasonably compact so the full response fits — favor a clean, working single-page app over an elaborate one that might get cut off.
 - Make it a complete, runnable, self-contained static site with no missing files.
-- Do not include any text outside the JSON object.`;
+- The entire response body must be valid JSON and nothing else.`;
 
 function safeParseBuildJSON(raw){
   let text = String(raw||"").trim();
@@ -301,7 +314,12 @@ function safeParseBuildJSON(raw){
   const lastBrace = text.lastIndexOf("}");
   if(firstBrace===-1||lastBrace===-1) throw new Error("AI did not return JSON.");
   text = text.slice(firstBrace, lastBrace+1);
-  const parsed = JSON.parse(text);
+  let parsed;
+  try{
+    parsed = JSON.parse(text);
+  }catch(jsonErr){
+    throw new Error(`AI response was not valid JSON (${jsonErr.message}). This usually means the response was cut off — try a simpler request.`);
+  }
   if(!parsed || !Array.isArray(parsed.files) || parsed.files.length===0){
     throw new Error("AI response was missing a valid files array.");
   }
@@ -382,14 +400,14 @@ app.post("/api/build", authMiddleware, async(req,res)=>{
     if(!prompt) return res.status(400).json({error:"Describe the app you want built."});
 
     const model = process.env.AI_BUILD_MODEL || process.env.AI_MODEL;
-    const raw = await callAI([{role:"user", content:prompt}], model, BUILD_SYSTEM_PROMPT);
+    const raw = await callAI([{role:"user", content:prompt}], model, BUILD_SYSTEM_PROMPT, {jsonMode:true, maxTokens:8000});
 
     let parsed;
     try{
       parsed = safeParseBuildJSON(raw);
     }catch(parseErr){
       console.error("Build JSON parse failed. Raw AI output:", raw);
-      return res.status(502).json({error:"The AI did not return a valid project structure. Try rephrasing your request."});
+      return res.status(502).json({error: parseErr.message || "The AI did not return a valid project structure. Try rephrasing your request."});
     }
 
     const result = await persistBuild(parsed.files);
@@ -403,14 +421,15 @@ app.post("/api/build", authMiddleware, async(req,res)=>{
 /* ---------- Edit/refine an existing build via follow-up instruction ---------- */
 const EDIT_SYSTEM_PROMPT = `You are a code generation engine maintaining an existing static web project.
 The user will give you the CURRENT project files followed by an instruction describing a change.
-Respond with ONLY valid JSON, no markdown fences, no commentary. The JSON must match this exact shape:
+You must respond with a single JSON object matching this exact shape:
 {"files":[{"path":"index.html","content":"..."}, ...]}
 Rules:
 - Return the COMPLETE, UPDATED set of project files — every file the project needs to run, not just the ones you changed.
 - Preserve everything from the current project that the instruction does not ask you to change.
 - Keep it to plain HTML, CSS, and vanilla JavaScript only — no build tools, no bundler-based frameworks. External CDN <script>/<link> tags are fine.
 - Always include an index.html entry point.
-- Do not include any text outside the JSON object.`;
+- Keep the project reasonably compact so the full response fits — favor a clean, working result over an elaborate one that might get cut off.
+- The entire response body must be valid JSON and nothing else.`;
 
 app.post("/api/build/:buildId/edit", authMiddleware, async(req,res)=>{
   try{
@@ -427,14 +446,14 @@ app.post("/api/build/:buildId/edit", authMiddleware, async(req,res)=>{
     const userContent = `Current project files:\n\n${filesBlock}\n\n--- INSTRUCTION ---\n${instruction}`;
 
     const model = process.env.AI_BUILD_MODEL || process.env.AI_MODEL;
-    const raw = await callAI([{role:"user", content:userContent}], model, EDIT_SYSTEM_PROMPT);
+    const raw = await callAI([{role:"user", content:userContent}], model, EDIT_SYSTEM_PROMPT, {jsonMode:true, maxTokens:8000});
 
     let parsed;
     try{
       parsed = safeParseBuildJSON(raw);
     }catch(parseErr){
       console.error("Build edit JSON parse failed. Raw AI output:", raw);
-      return res.status(502).json({error:"The AI did not return a valid project structure. Try rephrasing your change."});
+      return res.status(502).json({error: parseErr.message || "The AI did not return a valid project structure. Try rephrasing your change."});
     }
 
     const result = await persistBuild(parsed.files);

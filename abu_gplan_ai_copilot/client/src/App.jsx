@@ -273,7 +273,7 @@ export default function App(){
     </div>}
 
     <form className="composer" onSubmit={sendMessage}>
-     <input ref={fileInputRef} type="file" multiple accept=".jpg,.jpeg,.png,.pdf,.txt,.docx" style={{display:"none"}} onChange={onFilesSelected}/>
+     <input ref={fileInputRef} type="file" multiple accept="image/*,.pdf,.txt,.docx,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" style={{display:"none"}} onChange={onFilesSelected}/>
      {!buildMode&&<button type="button" className="composerIcon plus" onClick={openFilePicker}><Plus size={20}/></button>}
      <textarea value={input} rows="1" placeholder={buildMode?(activeBuildId?"Describe the change you want (e.g. \"make the header blue\")...":"Describe the web app you want built..."):"Message Abu Gplan AI..."} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage(e)}}}/>
      {!buildMode&&<button type="button" className={`composerIcon mic ${listening?"listening":""}`} onClick={toggleMic}><Mic size={19}/></button>}
