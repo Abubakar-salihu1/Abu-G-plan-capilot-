@@ -220,24 +220,43 @@ async function callAI(messages, model, systemPrompt, options={}){
 
   const trimmed = trimHistory(messages);
 
-  const body = {
-    model:useModel,
-    messages:[system,...trimmed],
-    temperature: options.temperature ?? 0.3,
-    max_tokens: options.maxTokens || 4096
-  };
-  if(options.jsonMode) body.response_format = {type:"json_object"};
+  async function doRequest(useJsonMode){
+    const body = {
+      model:useModel,
+      messages:[system,...trimmed],
+      temperature: options.temperature ?? 0.3,
+      max_tokens: options.maxTokens || 4096
+    };
+    if(useJsonMode) body.response_format = {type:"json_object"};
 
-  const r=await fetch(AI_API_URL,{
-    method:"POST",
-    headers:{"Content-Type":"application/json","Authorization":`Bearer ${AI_API_KEY}`},
-    body:JSON.stringify(body)
-  });
+    const r=await fetch(AI_API_URL,{
+      method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":`Bearer ${AI_API_KEY}`},
+      body:JSON.stringify(body)
+    });
+    return r;
+  }
+
+  let r = await doRequest(!!options.jsonMode);
+
+  // Some Groq models don't support response_format:json_object and return HTTP 400.
+  // Retry once without it rather than failing outright — the system prompt still
+  // instructs JSON-only output, so this is a safe fallback.
+  if(!r.ok && r.status===400 && options.jsonMode){
+    const firstErrBody = await r.text().catch(()=> "");
+    console.error("Groq rejected json_object mode, retrying without it. Original error:", firstErrBody);
+    r = await doRequest(false);
+  }
 
   if(!r.ok){
     const errBody = await r.text().catch(()=> "");
     console.error(`Groq error (HTTP ${r.status}):`, errBody);
-    throw new Error(`AI provider returned HTTP ${r.status}`);
+    let detail = "";
+    try{ detail = JSON.parse(errBody)?.error?.message || ""; }catch{}
+    if(r.status===429){
+      throw new Error("The AI provider is temporarily rate-limiting requests. Please wait a moment and try again.");
+    }
+    throw new Error(detail ? `AI provider error: ${detail}` : `AI provider returned HTTP ${r.status}`);
   }
 
   const data=await r.json();
