@@ -5,8 +5,6 @@ import crypto from "crypto";
 import multer from "multer";
 import fs from "fs";
 import path from "path";
-import * as archiverModule from "archiver";
-const archiver = archiverModule.default || archiverModule;
 import { createRequire } from "module";
 import mammoth from "mammoth";
 import sharp from "sharp";
@@ -16,6 +14,7 @@ import jwt from "jsonwebtoken";
 
 const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
+const archiver = require("archiver");
 
 dotenv.config();
 const app = express();
