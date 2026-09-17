@@ -1,5 +1,5 @@
 import React,{useEffect,useState,useRef} from "react";
-import {Bot,Menu,Plus,Send,Sparkles,Trash2,User,X,Code2,Lightbulb,FileText,Brain,Mic,ChevronDown,LogOut,Hammer,Download,ExternalLink,Camera,Image} from "lucide-react";
+import {Bot,Menu,Plus,Send,Sparkles,Trash2,User,X,Code2,Lightbulb,FileText,Brain,Mic,ChevronDown,LogOut,Hammer,Download,ExternalLink,Camera,Image,Wand2} from "lucide-react";
 const API=import.meta.env.VITE_API_URL||"http://localhost:5000/api";
 const ORIGIN=API.replace(/\/api\/?$/,"");
 
@@ -208,7 +208,7 @@ export default function App(){
    const data=await r.json();
    if(!r.ok) throw new Error(data.error||"Request failed");
    setConversationId(data.conversationId);
-   setMessages(m=>[...m,{role:"assistant",content:data.answer}]);
+   setMessages(m=>[...m,{role:"assistant",content:data.answer,suggestions:data.suggestions||[]}]);
    loadHistory();
   }catch(err){
    setMessages(m=>[...m,{role:"assistant",content:`I couldn't complete that request. ${err.message}`}]);
@@ -218,6 +218,24 @@ export default function App(){
  }
 
  async function deleteChat(id){await fetch(`${API}/conversations/${id}`,{method:"DELETE",headers:authHeaders()});if(id===conversationId)newChat();loadHistory()}
+
+ async function surpriseMe(){
+  if(loading) return;
+  setInput("");
+  setMessages(m=>[...m,{role:"user",content:"Surprise me with something you'd build"}]);
+  setLoading(true);
+  try{
+   const r=await fetch(`${API}/build`,{method:"POST",headers:{"Content-Type":"application/json",...authHeaders()},body:JSON.stringify({surprise:true})});
+   const data=await r.json();
+   if(!r.ok) throw new Error(data.error||"Build failed");
+   setMessages(m=>[...m,{role:"assistant",content:"Here's an idea:",build:data}]);
+   setActiveBuildId(data.buildId);
+  }catch(err){
+   setMessages(m=>[...m,{role:"assistant",content:`I couldn't generate an app. ${err.message}`}]);
+  }finally{
+   setLoading(false);
+  }
+ }
  const examples=[{icon:<Code2/>,text:"Build a professional website for my business"},{icon:<Lightbulb/>,text:"Help me solve a difficult problem"},{icon:<FileText/>,text:"Write a professional business proposal"},{icon:<Brain/>,text:"Explain a difficult topic step by step"}];
  const currentModelLabel=MODELS.find(m=>m.id===model)?.label||"Fast";
 
@@ -242,7 +260,7 @@ export default function App(){
   </aside>
   <main className="main">
    <header><button className="menu" onClick={()=>setSidebar(true)}><Menu/></button><div className="title"><Sparkles size={18}/> Abu Gplan AI Copilot</div><div className="online"><i/> Online</div></header>
-   <section className="chatArea">{messages.length===0?<div className="welcome"><img className="heroLogo" src="/logo.png"/><div className="eyebrow"><Sparkles size={15}/> YOUR AI WORKSPACE</div><h1>What can I help you solve?</h1><p>Ask Abu Gplan to plan, explain, code, analyze, write, brainstorm or work through a problem with you.</p><div className="examples">{examples.map((x,i)=><button key={i} onClick={()=>setInput(x.text)}><span>{x.icon}</span>{x.text}</button>)}</div></div>:<div className="messages">{messages.map((m,i)=><div className={`message ${m.role}`} key={i}><div className="avatar">{m.role==="user"?<User size={17}/>:<Bot size={17}/>}</div><div className="bubble">{m.content}{m.build&&<BuildResult build={m.build}/>}</div></div>)}{loading&&<div className="message assistant"><div className="avatar"><Bot size={17}/></div><div className="bubble thinking"><span/><span/><span/></div></div>}</div>}</section>
+   <section className="chatArea">{messages.length===0?<div className="welcome"><img className="heroLogo" src="/logo.png"/><div className="eyebrow"><Sparkles size={15}/> YOUR AI WORKSPACE</div><h1>What can I help you solve?</h1><p>Ask Abu Gplan to plan, explain, code, analyze, write, brainstorm or work through a problem with you.</p><div className="examples">{examples.map((x,i)=><button key={i} onClick={()=>setInput(x.text)}><span>{x.icon}</span>{x.text}</button>)}</div></div>:<div className="messages">{messages.map((m,i)=><div className={`message ${m.role}`} key={i}><div className="avatar">{m.role==="user"?<User size={17}/>:<Bot size={17}/>}</div><div className="bubble">{m.content}{m.build&&<BuildResult build={m.build}/>}{m.role==="assistant"&&i===messages.length-1&&!loading&&m.suggestions&&m.suggestions.length>0&&<div className="suggestionChips">{m.suggestions.map((s,si)=><button type="button" key={si} onClick={()=>setInput(s)}>{s}</button>)}</div>}</div></div>)}{loading&&<div className="message assistant"><div className="avatar"><Bot size={17}/></div><div className="bubble thinking"><span/><span/><span/></div></div>}</div>}</section>
 
    <div className="composerWrap">
     <div className="composerToolbar">
@@ -265,6 +283,11 @@ export default function App(){
      {buildMode&&activeBuildId&&
       <button type="button" className="buildToggle" onClick={()=>setActiveBuildId(null)} title="Discard the current app and start a new one">
        New app
+      </button>
+     }
+     {buildMode&&!activeBuildId&&
+      <button type="button" className="buildToggle" onClick={surpriseMe} title="Let the AI invent an app idea and build it">
+       <Wand2 size={14}/> Surprise me
       </button>
      }
     </div>

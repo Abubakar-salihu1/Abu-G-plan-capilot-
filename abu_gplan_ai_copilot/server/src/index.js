@@ -267,6 +267,29 @@ async function callAI(messages, model, systemPrompt, options={}){
   return choice?.message?.content || "No response was returned by the AI provider.";
 }
 
+/* ---------- Predictive follow-up suggestions after each chat reply ---------- */
+const SUGGESTIONS_SYSTEM_PROMPT = `Based on the conversation so far, suggest 3 short, specific follow-up messages the user might naturally want to send next.
+Respond with a single JSON object: {"suggestions":["...", "...", "..."]}
+Rules:
+- Each suggestion must be under 8 words, written from the user's point of view (as if the user is about to type it).
+- Make them genuinely useful next steps, not generic ("tell me more").
+- No numbering, no quotes within the strings, no explanation outside the JSON object.`;
+
+async function generateSuggestions(recentMessages, model){
+  try{
+    const raw = await callAI(recentMessages, model, SUGGESTIONS_SYSTEM_PROMPT, {jsonMode:true, maxTokens:300, temperature:0.6});
+    let text = String(raw||"").trim().replace(/^```(?:json)?/i,"").replace(/```$/,"").trim();
+    const firstBrace = text.indexOf("{");
+    const lastBrace = text.lastIndexOf("}");
+    if(firstBrace===-1||lastBrace===-1) return [];
+    const obj = JSON.parse(text.slice(firstBrace, lastBrace+1));
+    return Array.isArray(obj.suggestions) ? obj.suggestions.filter(s=>typeof s==="string").slice(0,3) : [];
+  }catch(e){
+    console.error("Suggestion generation failed (non-fatal):", e.message);
+    return [];
+  }
+}
+
 app.post("/api/chat", authMiddleware, upload.array("files", 5), async(req,res)=>{
   try{
     const message=String(req.body?.message||"").trim();
@@ -311,12 +334,20 @@ app.post("/api/chat", authMiddleware, upload.array("files", 5), async(req,res)=>
       {upsert:true}
     );
 
-    res.json({conversationId:c._id,answer});
+    // Suggestions are a nice-to-have — generate them off the already-updated
+    // conversation, but never let a failure here break the actual chat reply.
+    const suggestions = await generateSuggestions(
+      [...c.messages.slice(-6).map(m=>({role:m.role,content:typeof m.content==="string"?m.content:""}))],
+      model
+    );
+
+    res.json({conversationId:c._id,answer,suggestions});
   }catch(e){console.error(e);res.status(500).json({error:e.message||"Server error"});}
 });
 
 /* ---------- Build a runnable web app: AI returns structured files, we write + zip + preview them ---------- */
-const BUILD_SYSTEM_PROMPT = `You are a code generation engine. The user will describe a web app they want.
+const BUILD_SYSTEM_PROMPT = `You are a code generation engine. The user will describe a web app they want — sometimes in full detail, sometimes as just a short hint or theme (e.g. "a fitness tracker" or "something for recipe sharing").
+When the description is short or vague, do NOT ask clarifying questions — use your judgment to invent a complete, sensible feature set, layout, and visual style that fits the theme, and build that. Make creative, reasonable decisions rather than a bare-minimum interpretation.
 You must respond with a single JSON object matching this exact shape:
 {"files":[{"path":"index.html","content":"..."}, {"path":"style.css","content":"..."}, {"path":"script.js","content":"..."}]}
 Rules:
@@ -325,6 +356,8 @@ Rules:
 - Keep the project reasonably compact so the full response fits — favor a clean, working single-page app over an elaborate one that might get cut off.
 - Make it a complete, runnable, self-contained static site with no missing files.
 - The entire response body must be valid JSON and nothing else.`;
+
+const SURPRISE_PROMPT = "Invent an original, useful, and visually polished web app idea from scratch — something genuinely creative, not generic. Then build it.";
 
 function safeParseBuildJSON(raw){
   let text = String(raw||"").trim();
@@ -415,11 +448,12 @@ async function persistBuild(files){
 
 app.post("/api/build", authMiddleware, async(req,res)=>{
   try{
-    const prompt = String(req.body?.prompt||"").trim();
+    const surprise = !!req.body?.surprise;
+    const prompt = surprise ? SURPRISE_PROMPT : String(req.body?.prompt||"").trim();
     if(!prompt) return res.status(400).json({error:"Describe the app you want built."});
 
     const model = process.env.AI_BUILD_MODEL || process.env.AI_MODEL;
-    const raw = await callAI([{role:"user", content:prompt}], model, BUILD_SYSTEM_PROMPT, {jsonMode:true, maxTokens:8000});
+    const raw = await callAI([{role:"user", content:prompt}], model, BUILD_SYSTEM_PROMPT, {jsonMode:true, maxTokens:8000, temperature: surprise ? 0.9 : 0.3});
 
     let parsed;
     try{

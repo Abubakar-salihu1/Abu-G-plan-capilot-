@@ -108,6 +108,25 @@ body{
 .thinking span:nth-child(3){animation-delay:.3s}
 @keyframes bounce{50%{opacity:.25;transform:translateY(-3px)}}
 
+.suggestionChips{
+  display:flex;
+  flex-wrap:wrap;
+  gap:7px;
+  margin-top:10px;
+}
+.suggestionChips button{
+  background:rgba(34,211,238,0.08);
+  border:1px solid rgba(34,211,238,0.35);
+  color:#8eefff;
+  border-radius:999px;
+  padding:6px 12px;
+  font-size:12px;
+  cursor:pointer;
+}
+.suggestionChips button:hover{
+  background:rgba(34,211,238,0.16);
+}
+
 /* ===== Build App result panel (preview + download) ===== */
 .buildResult{
   margin-top:12px;
